@@ -1,9 +1,11 @@
 use std::env;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::io::{self, BufRead, BufReader, Error, ErrorKind};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
+use logger::Logger;
 use nix::sys::signal::{kill, Signal};
 
 use ratatui::{
@@ -21,6 +23,7 @@ use crossterm::{
 };
 
 mod app;
+mod logger;
 use app::{App, AppEvent, Panel};
 
 /// Handle keyboard input events. Returns true if the app should exit.
@@ -80,6 +83,8 @@ fn handle_key_event(app: &mut App, key: event::KeyEvent) -> bool {
 }
 
 fn main() -> Result<(), io::Error> {
+    let logger = Logger::new();
+
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
@@ -90,12 +95,14 @@ fn main() -> Result<(), io::Error> {
     let command_args = args[2..].to_vec();
 
     // Setup terminal
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // let mut stdout = io::stdout();
+    // execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = ratatui::init();
+
+    // enable_raw_mode()?;
+    // let backend = CrosstermBackend::new(stdout);
+    // let mut terminal = Terminal::new(backend)?;
 
     // Setup app
     let mut app = App::new(&command, &command_args);
@@ -103,27 +110,59 @@ fn main() -> Result<(), io::Error> {
     // Setup channels
     let (tx, rx) = mpsc::channel();
     let tx_clone = tx.clone();
+    
+    // Setup shared running flag for clean shutdown
+    let running = Arc::new(AtomicBool::new(true));
+    let command_running = running.clone();
+    let ticker_running = running.clone();
+
+    let mut thread_logger = logger.clone();
 
     // Spawn command in a thread
-    thread::spawn(move || {
+    let command_handle = thread::spawn(move || {
         let mut cmd = Command::new(&command);
         cmd.args(&command_args);
         cmd.stdout(Stdio::piped());
 
         match cmd.spawn() {
             Ok(mut child) => {
+                thread_logger.info("Command spawned");
+
                 // Send the child PID to the main thread
                 let pid = child.id();
                 let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
                 let _ = tx.send(AppEvent::ChildPid(nix_pid));
 
+                // Check if we should continue running
+                if !command_running.load(Ordering::SeqCst) {
+                    // Try to kill the child process and exit
+                    let _ = child.kill();
+                    return;
+                }
+
                 if let Some(stdout) = child.stdout.take() {
                     let reader = BufReader::new(stdout);
                     for line in reader.lines().map_while(Result::ok) {
+                        // Check if we should continue running
+                        if !command_running.load(Ordering::SeqCst) {
+                            // Try to kill the child process and exit
+                            let _ = child.kill();
+                            return;
+                        }
+                        
                         if tx.send(AppEvent::Output(line)).is_err() {
                             break;
                         }
                     }
+                }
+
+                thread_logger.info("Command completed reading output");
+
+                // One final check before waiting
+                if !command_running.load(Ordering::SeqCst) {
+                    // Try to kill the child process and exit
+                    let _ = child.kill();
+                    return;
                 }
 
                 match child.wait() {
@@ -136,16 +175,16 @@ fn main() -> Result<(), io::Error> {
                     }
                 }
             }
-            Err(_) => {
-                // let _ = tx.send(AppEvent::Output(format!("Error: {}", e)));
+            Err(e) => {
+                let _ = tx.send(AppEvent::Output(format!("Error: {}", e)));
                 let _ = tx.send(AppEvent::CommandExit(-1));
             }
         };
     });
 
     // Ticker thread for UI updates
-    thread::spawn(move || {
-        loop {
+    let ticker_handle = thread::spawn(move || {
+        while ticker_running.load(Ordering::SeqCst) {
             if tx_clone.send(AppEvent::Tick).is_err() {
                 break;
             }
@@ -425,25 +464,36 @@ fn main() -> Result<(), io::Error> {
         }
     }
 
+    // Signal all threads to stop
+    running.store(false, Ordering::SeqCst);
+    
     // Kill child process if it exists and is still running
     if let Some(pid) = app.child_pid {
         // Send SIGTERM to terminate the process
         let _ = kill(pid, Signal::SIGTERM);
     }
+    
+    // Give threads a moment to clean up
+    thread::sleep(Duration::from_millis(100));
+    
+    // Try to gracefully shut down the command thread with timeout
+    let _ = command_handle.join();
+    
+    // Try to gracefully shut down the ticker thread with timeout
+    let _ = ticker_handle.join();
 
-    disable_raw_mode()?;
-    terminal.show_cursor()?;
-
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    ratatui::restore();
 
     // TODO: write output to stdout
-    // for line in app.output_lines {
-    //     println!("{}", line);
-    // }
+    for line in app.output_lines {
+        println!("{}", line);
+    }
+
+    println!("---");
+
+    for log in logger.dump() {
+        println!("{}", log);
+    }
 
     Ok(())
 }

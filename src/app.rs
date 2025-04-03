@@ -54,6 +54,10 @@ impl App {
         }
     }
 
+    pub fn set_theme_mode(&mut self, mode: dark_light::Mode) {
+        self.theme_mode = mode;
+    }
+
     pub fn next_panel(&mut self) {
         self.active_panel = match self.active_panel {
             Panel::Input => Panel::Output,
