@@ -1,6 +1,7 @@
 use ratatui::style::{Color, Style, Modifier};
 use grep::regex::RegexMatcher;
 use grep::matcher::Matcher;
+use strip_ansi_escapes;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Panel {
@@ -94,21 +95,23 @@ impl App {
         let current_line_index = self.output_lines.len();
         self.output_lines.push(line.clone());
         
+        // Strip ANSI escape sequences for TUI display only
+        let display_line = strip_ansi_escapes::strip_str(&line);
+        
         // Always add lines if no search query (show all)
         if self.search_query.is_empty() {
-            // Add line number as prefix
-            let line_num = current_line_index + 1;
-            self.filtered_lines.push(format!("{:5} | {}", line_num, line));
+            // Just add the line directly without numbers
+            self.filtered_lines.push(display_line);
             self.filtered_indices.push(current_line_index);
             return;
         }
         
         // If we have a search query, check if the new line matches
+        // Note: We search the stripped line for better matching
         if let Ok(matcher) = RegexMatcher::new(&self.search_query) {
-            if matcher.is_match(line.as_bytes()).unwrap_or(false) {
-                // Add line number as prefix
-                let line_num = current_line_index + 1;
-                self.filtered_lines.push(format!("{:5} | {}", line_num, line));
+            if matcher.is_match(display_line.as_bytes()).unwrap_or(false) {
+                // Just add the line directly without numbers
+                self.filtered_lines.push(display_line);
                 self.filtered_indices.push(current_line_index);
             }
         }
@@ -136,6 +139,14 @@ impl App {
             dark_light::Mode::Dark => Color::Black,
             dark_light::Mode::Light => Color::White,
             dark_light::Mode::Unspecified => Color::White,
+        }
+    }
+    
+    pub fn get_selection_bg_color(&self) -> Color {
+        match self.theme_mode {
+            dark_light::Mode::Dark => Color::DarkGray,
+            dark_light::Mode::Light => Color::Gray,
+            dark_light::Mode::Unspecified => Color::Gray,
         }
     }
     
@@ -193,13 +204,15 @@ impl App {
         
         let original_index = self.filtered_indices[self.selected_index];
         
-        // Show all output lines with line numbers
+        // Show all output lines with prefix for selected line
         let mut context = Vec::new();
         for i in 0..self.output_lines.len() {
+            // Strip ANSI escapes for display in context view
+            let display_line = strip_ansi_escapes::strip_str(&self.output_lines[i]);
+            
+            // Add prefix to indicate current line (> for selected line, spaces for others)
             let prefix = if i == original_index { "> " } else { "  " };
-            // Add line number (1-based) as prefix
-            let line_number = i + 1;
-            context.push(format!("{}{:5} | {}", prefix, line_number, self.output_lines[i]));
+            context.push(format!("{}{}", prefix, display_line));
         }
         
         // Return all lines and the selected line's position relative to visible area
@@ -270,9 +283,11 @@ impl App {
         // If search query is empty, show all lines in filtered view
         if self.search_query.is_empty() {
             for (i, line) in self.output_lines.iter().enumerate() {
-                // Add line number as prefix
-                let line_num = i + 1;
-                self.filtered_lines.push(format!("{:5} | {}", line_num, line));
+                // Strip ANSI escapes for display
+                let display_line = strip_ansi_escapes::strip_str(line);
+                
+                // Just add the line directly without numbers
+                self.filtered_lines.push(display_line);
                 self.filtered_indices.push(i);
             }
             // Initialize preview scroll
@@ -285,10 +300,12 @@ impl App {
             Ok(matcher) => {
                 // Filter lines that match the regex
                 for (i, line) in self.output_lines.iter().enumerate() {
-                    if matcher.is_match(line.as_bytes()).unwrap_or(false) {
-                        // Add line number as prefix
-                        let line_num = i + 1;
-                        self.filtered_lines.push(format!("{:5} | {}", line_num, line));
+                    // Strip ANSI escapes for display and matching
+                    let display_line = strip_ansi_escapes::strip_str(line);
+                    
+                    if matcher.is_match(display_line.as_bytes()).unwrap_or(false) {
+                        // Just add the line directly without numbers
+                        self.filtered_lines.push(display_line);
                         self.filtered_indices.push(i);
                     }
                 }
@@ -296,9 +313,11 @@ impl App {
             Err(_) => {
                 // Invalid regex, show all lines in filtered view
                 for (i, line) in self.output_lines.iter().enumerate() {
-                    // Add line number as prefix
-                    let line_num = i + 1;
-                    self.filtered_lines.push(format!("{:5} | {}", line_num, line));
+                    // Strip ANSI escapes for display
+                    let display_line = strip_ansi_escapes::strip_str(line);
+                    
+                    // Just add the line directly without numbers
+                    self.filtered_lines.push(display_line);
                     self.filtered_indices.push(i);
                 }
             }

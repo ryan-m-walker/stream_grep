@@ -10,19 +10,31 @@ impl Logger {
     }
 
     pub fn info(&mut self, message: &str) {
-        self.logs.lock().unwrap().push(format!("[Info] {}", message.to_string()));
+        if let Ok(mut logs) = self.logs.lock() {
+            logs.push(format!("[Info] {}", message));
+        }
     }
 
     pub fn error(&mut self, message: &str) {
-        self.logs.lock().unwrap().push(format!("[Error] {}", message.to_string()));
+        if let Ok(mut logs) = self.logs.lock() {
+            logs.push(format!("[Error] {}", message));
+        }
     }
 
     pub fn warn(&mut self, message: &str) {
-        self.logs.lock().unwrap().push(format!("[Warn] {}", message.to_string()));
+        if let Ok(mut logs) = self.logs.lock() {
+            logs.push(format!("[Warn] {}", message));
+        }
     }
 
-    pub fn dump(&self) -> Vec<String> {
-        self.logs.lock().unwrap().clone()
+    pub fn dump(&self) {
+        if let Ok(logs) = self.logs.lock() {
+            println!("\n--- DEV LOGS ---");
+            for line in logs.iter() {
+                println!("{}", line);
+            }
+            println!("----------------\n");
+        }
     }
 
     pub fn clone(&self) -> Self {
